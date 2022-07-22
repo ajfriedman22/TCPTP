@@ -11,41 +11,94 @@ from itertools import product
 from statistics import stdev
 import sys
 from mpl_toolkits import mplot3d
+import os.path
+
+def lig_dist_uncorr(num_pairs, dist_all, lig, dist2_all, t_dist):
+    time_uncorr = len(t_dist)
+    dist_uncorr = np.zeros((time_uncorr, num_pairs))
+    if lig == 'both':
+        dist2_uncorr = np.zeros((time_uncorr, num_pairs))
+    for i in range(num_pairs):
+        dist = dist_all[:,i]
+        dist_uncorr[:,i] = uncorr.sort(dist, t_dist)
+        if lig == 'both':
+            dist2 = dist2_all[:,i]
+            dist2_uncorr[:,i] = uncorr.sort(dist2, t_dist)
+    if lig == 'both':
+        return dist_uncorr, dist2_uncorr
+    else:
+        return dist_uncorr
+
+def lig_hel_inter(num_pairs, dist, dist2, n, lig_tot_cont, lig, lig2_tot_cont, bond):
+    check = 0
+    check2 = 0
+    for j in range(num_pairs): #Determine # of contacts with a3 helix
+            if dist[i][j] <= 0.5:
+                check += 1
+                if j < n:
+                    check_top += 1
+                lig_tot_cont[bond] += 1
+            if lig == 'both' and dist2[i][j] <= 0.5:
+                check2 += 1
+                lig2_tot_cont[bond] += 1
+            bond += 1
+    if lig == 'both' and n > 0:
+        return check, check2, check_top, lig_tot_cont, lig2_tot_cont, bond
+    elif lig == 'both' and n == 0:
+        return check, check2, lig_tot_cont, lig2_tot_cont, bond
+    elif lig != 'both' and n > 0:
+        return check, check_top, lig_tot_cont, bond
+    elif lig != 'both' and n == 0:
+        return check, lig_tot_cont, bond
 
 #Declare arguments
-parser = argparse.ArgumentParser(description = 'Determination of DSSP, H-bonds, Ligand Contacts, protein and ligand RMSD, Helical interactions and PCA for GROMACS Trajectory of PTP1B')
+parser = argparse.ArgumentParser(description = 'Determination of DSSP, H-bonds, Ligand Contacts, protein and ligand RMSD, Helical interactions and PCA for GROMACS Trajectory of TCPTP')
 parser.add_argument('-t', required=True, help='File name for input trajectory')
 parser.add_argument('-g', required=True, help= 'File name for input topology (gro format)')
-parser.add_argument('-e', required=False, default=True, type=bool, help= 'Is the input an equilibrated trajectory?')
+parser.add_argument('-e', required=False, default=0, type=int, help= 'If input trajectory is equilibrated input equilibration time otherwise input 0(ns)')
 parser.add_argument('-f', required=True, help='Base for all output file names')
 parser.add_argument('-r', required=False, help='Should the reference structure for RMSD and RMSF be Apo Open or Closed or other?')
 parser.add_argument('-rn', required=False, help='Reference name for RMSD')
 parser.add_argument('-l', required=False, default='none', help='If ligand analysis should be performed, which ligand is present?')
 parser.add_argument('-lref', required=False, default='none', help='Ligand reference for RMSD')
 parser.add_argument('-a', required=False, default=False, type=bool, help='Should DSSP be calculated?')
-parser.add_argument('-b', required=False, default=False, type=bool, help='Should Hbond Analysis be preformed?')
+parser.add_argument('-b', required=False, default=False, type=bool, help='Should full Hbond Analysis be preformed?')
+parser.add_argument('-bn', required=False, default=False, type=bool, help='Should Hbond Network Analysis be preformed?')
 parser.add_argument('-i', required=False, default=False, type=bool, help='Should helical interactions be measured?')
+parser.add_argument('-hd', required=False, default=False, type=bool, help='Should individual helical distances be measured?')
+parser.add_argument('-input', required=False, default=False, type=str, help='Provide input file for residue pairs. Otherwise use default.')
 parser.add_argument('-p', required=False, default=False, type=bool, help='Should PCA be preformed?')
-parser.add_argument('-m', required=False, default=0, type=int, help='How many residues are missing from the N-terminus?')
 parser.add_argument('-rms', required=False, default=False, type=bool, help='Should RMSF and RMSD analysis be computed?')
+parser.add_argument('-w', required=False, default=False, type=bool, help='Should WPD loop analysis be completed?')
 parser.add_argument('-d', required=True, type=str, help='Directory Path for PTP1B repository')
+parser.add_argument('-n', required=False, default = 300, type=int, help='Total length of trajectory(ns)')
+parser.add_argument('-m', required=False, default = 0, type=int, help='Number of Missing Residues')
 
 #Import Arguments
 args = parser.parse_args()
-File_traj = args.t + '.xtc'
-File_gro = args.g + '.gro'
+File_traj = args.t
+if File_traj.split('.')[-1] != 'xtc': #Add file extension if not in input
+    File_traj = File_traj + '.xtc'
+File_gro = args.g
+if File_gro.split('.')[-1] != 'gro': #Add default file extension if not in input
+    File_gro = File_gro + '.gro'
 File_base = args.f
 ref_type = args.r
 dssp_check = args.a
 hbond_check = args.b
-equil_check = args.e
+hbond_net_check = args.bn
+eq_time = args.e
 check_hel = args.i
+check_hel_indv = args.hd
+input_inter = args.input
 pca_ck = args.p
+wpd_ck = args.w
 rms_chk = args.rms
 lig = args.l
 lig_ref_pdb = args.lref
 directory = args.d
-miss_num = args.m
+traj_time = args.n
+offset = args.m + 1
 if lig != 'none':
     lig_check = True
 else:
@@ -58,13 +111,21 @@ import uncorr
 import plot
 
 #Load trajectories
-traj_bb, traj_prot, traj_ns, traj_a7 = mdfunc.mdtraj_load(File_traj, File_gro, [283, 294], miss_num)
+traj_bb, traj_prot, traj_ns, traj_a7, miss_first = mdfunc.mdtraj_load(File_traj, File_gro, [284, 294]) 
 
 #Determine if the full a7 helix is present (residues 287 to 295)
-if traj_prot.n_residues > (295 - miss_num):
+if traj_prot.n_residues > 294:
     a7_present = True
 else:
     a7_present = False
+
+#Print to output if dealing with an equilibrated trajectory or not
+if eq_time == 0:
+    name_add = '_full'
+    print('Unequilibrated Trajectory!')
+else:
+    name_add = ''
+    print('Processing equilibrated trajectory')
 
 #Load reference trajectory if RMSD analysis is requested
 if rms_chk == True:
@@ -76,7 +137,10 @@ if rms_chk == True:
         ref = directory + 'analysis_scripts/RMSD_ref/Apo_closed_bb_cluster.pdb'
         ref_name = 'closed'
     else:
-        ref = ref_type
+        if ref_type.split('.')[-1] != 'pdb': #Add default file extension if not in input
+            ref = ref_type + '.pdb'
+        else:
+            ref = ref_type
         ref_name = args.rn
     
     #Load reference PDB
@@ -98,46 +162,93 @@ print('Topology Loaded')
 #If requested complete RMSD of protein bb atoms
 if rms_chk == True:
     #Determine reference based on input
-    if (ref_type == 'Apo_open' and a7_present == True and miss_first == False) or ref_name == 'self':
+    if traj_bb.n_residues == ref_bb.n_residues:
         #Calculate RMSF from reference structure
         rmsf_data = md.rmsf(traj_bb, ref_bb, parallel=True, precentered=False)
 
         #Calculate RMSD for full protein relative to reference structure
-        rmsd_full_uncorr, t_full = mdfunc.compute_rmsd(traj_bb, ref_bb)
+        rmsd_full_uncorr, t_full = mdfunc.compute_rmsd(traj_bb, ref_bb, False)
         
+        #Determine time in ns for each uncorrelated frame
+        frame_per_ns = traj_bb.n_frames/traj_time
+        uncorr_time = np.zeros(len(t_full))
+        for i in range(len(t_full)):
+            uncorr_time[i] = t_full[i]/frame_per_ns + eq_time
+
         #Only save RMSD and RMSF values to file for equilibrated input trajectories
-        if equil_check == True:
+        if eq_time != 0 and ref_name == 'self':
             np.savetxt('rmsd_full_ref_' + str(ref_name) + '.txt', rmsd_full_uncorr) #save to text file
             np.savetxt('rmsf_ref_' + str(ref_name) + '.txt', rmsf_data) #save to text file
-            np.savetxt('uncorrelated_frames.txt', t_full) #Save indices for uncorrelated frames to file
+        np.savetxt('uncorrelated_frames' + name_add + '.txt', t_full) #Save indices for uncorrelated frames to file
+        np.savetxt('uncorrelated_time' + name_add + '.txt', uncorr_time) #Save time for uncorrelated frames to file
 
         #Delete unneeded arrays to save memory
         del rmsf_data; del rmsd_full_uncorr
-    
+    else:
+        t_full = False
     #Only complete section RMSD for equilibrated input trajectories
-    if equil_check == True:
+    if eq_time != 0:
         #Set Topology for the backbone atoms only of the trajectory and reference structure
         top_bb = traj_bb.topology
         top_ref_bb = ref_bb.topology
     
         #Set sections of interest
         if a7_present == True: #Only compute these distances if the a7 helix is presenty
-            sect_names = ['WPD', 'P', 'SBL', 'a3', 'a4', 'a5', 'a6', 'a7', 'L11', 'Q'] #Section names
-            sect_res = np.array([[177, 185], [214, 223], [114, 121], [186, 200], [219, 237], [239, 252], [261, 278], [283, 294], [151, 154], [256, 260]])#Section start and end points
+            sect_names = ['WPD', 'WPD_a3', 'P', 'CYS', 'WPD_181', 'SBL', 'a3', 'a3_top', 'a4', 'a5', 'a6', 'a6_bot', 'a7', 'L11', 'Q'] #Section names
+            sect_res = np.array([[179, 187], [187, 190], [214, 221], [216, 0], [182, 0], [115, 120], [188, 202], [188, 193], [221, 238], [245, 254], [262, 277],
+                [273, 277], [286, 294], [149, 152], [258, 262]])#Section start and end points
 
         else: #Omit sections which include the a7 helix
-            sect_names = ['WPD', 'P', 'SBL', 'a3', 'a4', 'a5', 'a6', 'L11', 'Q'] #Section names
-            sect_res = np.array([[177, 185], [214, 223], [114, 121], [186, 200], [219, 237], [239, 252], [261, 278], [151, 154], [256, 260]])#Section start and end points
+            sect_names = ['WPD', 'WPD_a3', 'P', 'CYS', 'WPD_181', 'SBL', 'a3', 'a3_top', 'a4', 'a5', 'a6', 'a6_bot', 'L11', 'Q'] #Section names
+            sect_res = np.array([[179, 187], [187, 190], [214, 221], [216, 0], [182, 0], [115, 120], [188, 202], [188, 193], [221, 238], [245, 254], [262, 277],
+                [273, 277], [149, 152], [258, 262]])#Section start and end points
 
         #Compute RMSD for all sections of interest and save to text file
         for i in range(len(sect_names)):
-            mdfunc.compute_save_rmsd_sect(ref_bb, top_ref_bb, traj_bb, top_bb, sect_res[1,:], ref_type, sect_names[i], ref_name, miss_num)
+            mdfunc.compute_save_rmsd_sect(ref_bb, top_ref_bb, traj_bb, top_bb, sect_res[i,:], ref_type, sect_names[i], ref_name, offset, t_full)
     
     print('RMSD and RMSF Analysis Completed')
 
 #Skip RMSD and RMSF analysis if input option not selected
 else:
     print('RMSD and RMSF Analysis Skipped')
+    t_full = False
+
+#WPD Loop Analysis
+if wpd_ck == True:
+    #Determine distance between catalytic residues 181 and 215
+    res1 = 182 - offset
+    res2 = 216 - offset 
+    
+    residues = np.zeros((1,2))
+    
+    top = traj_ns.topology
+   
+    residues[0][0] = top.select('resid ' + str(res1) + ' and name CA') #Select protein from the trajectory select residue 181
+    residues[0][1] = top.select('resid ' + str(res2) + ' and name CA') #Select protein from the trajectory select residue 215
+    
+    WPD_dist = md.compute_distances(traj_ns, residues, periodic=False) #Compute distance between h-bond donor and acceptor
+    
+    #Remove uncorrelated samples
+    if rms_chk == False:
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_full = []
+            for i in lines:
+                t_full.append(float(i.strip()))
+            WPD_uncorr_dist = uncorr.sort(WPD_dist, t_full)
+        else:
+            print('WARNING: Uncorrelated samples not removed!')
+            WPD_uncorr_dist = WPD_dist
+    else:
+        WPD_uncorr_dist = uncorr.sort(WPD_dist, t_full)
+    
+    #Save to file
+    np.savetxt('WPD_dist' + name_add + '.txt', WPD_uncorr_dist)
+    
+    print('WPD Loop Analysis Completed')
+else:
+    print('WPD Loop Analysis Skipped')
 
 #Only do DSSP if input option is selected
 if dssp_check == True:
@@ -148,34 +259,36 @@ if dssp_check == True:
     
     #Compute Secondary Structure of all Residues in the a7 helix using MDTraj function
     dssp_list = md.compute_dssp(traj_a7, simplified=False) #Compute DSSP for all residues in the a7 helix for all trajectory frames
-    file_dssp = open('DSSP_'+ File_base + '.txt','w') #Create output file for DSSP and write over if file is present
-   
-    if rms_chk == False:
-        print('WARNING: RMSD not calculated. Uncorrelated samples not removed!\n')
-        phi_uncorr = phi_angle
-        psi_uncorr = psi_angle
-        
-        dssp_uncorr = dssp_list
-    else:
-        #Limit to uncorrelated data based on the uncorrelated samples for bb RMSD of the full protein
-        phi_uncorr = np.zeros((len(t_full), angles)) #Declare empty vectors for data
-        psi_uncorr = np.zeros((len(t_full), angles))
-        for i in range(angles): #Loop through all angles
-            phi_uncorr[:,i] = uncorr.sort(phi_angle[:,i], t_full)
-            psi_uncorr[:,i] = uncorr.sort(psi_angle[:,i], t_full)
+    file_dssp = open('DSSP_'+ File_base + name_add + '.txt','w') #Create output file for DSSP and write over if file is present
 
-        #Limit to Uncorrelated data
-        frame_max,residue = dssp_list.shape #Determine the number of frames and residues for which DSSP analysis was completed
-        dssp_uncorr = np.full((len(t_full) - 1, residue), None) #Declare an empty vector to input uncorrelated DSSP values for each residue
-        for i in range(residue): #Loop through each residue seperately
-            dssp_res = dssp_list[:,i] #Seperate all time values for a single residue
-            dssp_res_mod = [] 
-            for j in dssp_res:
-                if j == ' ': #In DSSP a space designates a loop or irregular element
-                    dssp_res_mod.append('L') #Subsitute an L for this designation to prevent issues with reading character values
-                else: #If not a space keep the same character designation
-                    dssp_res_mod.append(j)
-            dssp_uncorr[:,i] = uncorr.char(dssp_res_mod, t_full)
+    if rms_chk == False:
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_full = []
+            for i in lines:
+                t_full.append(float(i.strip()))
+        else:
+            print('WARNING: Uncorrelated samples not removed!\n')
+            t_full = np.linspace(0, len(phi_angle), num=len(phi_angle))
+    #limit to uncorrelated data based on the uncorrelated samples for bb rmsd of the full protein
+    phi_uncorr = np.zeros((len(t_full), angles)) #declare empty vectors for data
+    psi_uncorr = np.zeros((len(t_full), angles))
+    for i in range(angles): #loop through all angles
+        phi_uncorr[:,i] = uncorr.sort(phi_angle[:,i], t_full)
+        psi_uncorr[:,i] = uncorr.sort(psi_angle[:,i], t_full)
+
+    #limit to uncorrelated data
+    frame_max,residue = dssp_list.shape #determine the number of frames and residues for which dssp analysis was completed
+    dssp_uncorr = np.full((len(t_full) - 1, residue), none) #declare an empty vector to input uncorrelated dssp values for each residue
+    for i in range(residue): #loop through each residue seperately
+        dssp_res = dssp_list[:,i] #seperate all time values for a single residue
+        dssp_res_mod = [] 
+        for j in dssp_res:
+            if j == ' ': #in dssp a space designates a loop or irregular element
+                dssp_res_mod.append('l') #subsitute an l for this designation to prevent issues with reading character values
+            else: #if not a space keep the same character designation
+                dssp_res_mod.append(j)
+        dssp_uncorr[:,i] = uncorr.char(dssp_res_mod, t_full)
     
     #Output DSSP to file
     frame_uncorr, residue = dssp_uncorr.shape
@@ -186,9 +299,9 @@ if dssp_check == True:
     file_dssp.close() #close file
     
     #Save psi and phi angles to files and overwrite if file is present
-    np.savetxt('phi_' + File_base + '.txt', phi_uncorr)
-    np.savetxt('psi_' + File_base + '.txt', psi_uncorr)
-    
+    np.savetxt('phi_' + File_base + name_add + '.txt', phi_uncorr)
+    np.savetxt('psi_' + File_base + name_add + '.txt', psi_uncorr)
+
     #Delete arrays to save memory
     del phi_angle; del psi_angle; del phi_uncorr; del psi_uncorr; del dssp_list; del dssp_uncorr; del dssp_res_mod
 
@@ -204,10 +317,11 @@ if hbond_check == True:
     #Determine list of H-bonds present in the trajectory for over 60% of the frames
     hbonds = md.baker_hubbard(traj_ns, freq=0.6, exclude_water=True, periodic=False)
     label = lambda hbond : '%s -- %s' % (traj_ns.topology.atom(hbond[0]), traj_ns.topology.atom(hbond[2])) #Extract labels for h-bonds
-    np.savetxt('Hbonds_atom_' + File_base + '.txt', hbonds) #Save all atom indicies of h-bonds to file for further analysis
-    
+    np.savetxt('Hbonds_atom_' + File_base + name_add + '.txt', hbonds) #Save all atom indicies of h-bonds to file for further analysis
+
     #Write all h-bonds present for >60% of trajectory to file
-    file_object = open('Hbonds_'+ File_base +'.txt', 'w') 
+    file_object = open('Hbonds_'+ File_base + name_add + '.txt', 'w') 
+
     for hbond in hbonds:
         file_object.write(label(hbond)) #Maintain same order as atom indicies
         file_object.write('\n')
@@ -224,14 +338,14 @@ if hbond_check == True:
             if da_distances[i,j] <= 0.25 and da_angles[i,j] >= 2.094: #If distance between donor and acceptor is less than 2.5A and the angle is greater than 120 degrees or ~ 2.094 radians
                 count +=1
         per.append(100*count/num_t) #Percentage of time each h-bond is present in trajectory
-    np.savetxt('Hbonds_per_' + File_base + '.txt',per)
+    np.savetxt('Hbonds_per_' + File_base + name_add + '.txt', per)
 
     #Delete unneededarrays to save memory
     del hbonds; del label; del per; del da_distances; del da_angles
 
     #If ligand analysis is requested determine h-bonds between ligand and PTP1B residues
     if lig_check == True:
-        file_lig = open('Hbonds_lig_' +  File_base + '.txt', 'w') #Create file for list of h-bonds determined to be present more than 10% of the trajectory
+        file_lig = open('Hbonds_lig_' +  File_base + name_add + '.txt', 'w') #Create file for list of h-bonds determined to be present more than 10% of the trajectory
         if lig == 'both':            
             ligand = traj_ns.topology.select('resname AD') #Select the ligand by name (based on topology) from the trajectory
             ligand2 = traj_ns.topology.select('resname BBR') #Select the ligand by name (based on topology) from the trajectory
@@ -239,7 +353,7 @@ if hbond_check == True:
             ligand = traj_ns.topology.select('resname ' + str(lig)) #Select the ligand by name (based on topology) from the trajectory
         protein = traj_ns.topology.select('protein') #Select protein from the trajectory
         hbonds = md.baker_hubbard(traj_ns, freq = 0.1, exclude_water=True, periodic=True) #Find all h-bonds present >10% of the trajectory
-        label = lambda hbond : '%s -- %s' % (traj.topology.atom(hbond[0]), traj.topology.atom(hbond[2])) #Seperate the names of the h-bonds based on topology nomenclature
+        label = lambda hbond : '%s -- %s' % (traj_ns.topology.atom(hbond[0]), traj_ns.topology.atom(hbond[2])) #Seperate the names of the h-bonds based on topology nomenclature
         if lig == 'both':
             file_lig.write('AD:\n')
         for hbond in hbonds: #search all h-bonds
@@ -257,6 +371,7 @@ if hbond_check == True:
         del protein; del ligand; del hbonds; del label
         if lig == 'both':
             del ligand2
+
     #Write to screen when code section is completed
     print('Hbond Analysis Written')
 
@@ -264,291 +379,125 @@ if hbond_check == True:
 else:
     print('Hbond Analysis Skipped')
 
-###################################################   REVISE FROM HERE    ##################################################################################################################
+if hbond_net_check == True:
+    #Look specifically for hbonds important to the allosteric network
+    hbond_allo_name = open(directory + '/analysis_scripts/Hbond_allo.txt', 'r').readlines()
+    top = traj_ns.topology
+
+    hbond_allo_atom = np.zeros((len(hbond_allo_name), 3))
+    for i in range(len(hbond_allo_name)):
+        bond = hbond_allo_name[i].strip().split()
+
+        res1 = int(bond[1]) - offset
+        res2 = int(bond[4]) - offset
+        
+        if traj_prot.n_residues > res1 and traj_prot.n_residues > res2:
+            hbond_allo_atom[i,0] = top.select('resid ' + str(res1) + ' and name ' + str(bond[2]))
+            hbond_allo_atom[i,2] = top.select('resid ' + str(res2) + ' and name ' + str(bond[5]))
+            hbond_allo_atom[i,1] = hbond_allo_atom[i,0]+1
+
+    per = [] #Declare empty array for percentage of time h-bond is formed
+    da_distances = md.compute_distances(traj_ns, hbond_allo_atom[:,[1,2]], periodic=False) #Compute distance between h-bond donor and acceptor
+    da_angles = md.compute_angles(traj_ns, hbond_allo_atom[:,:], periodic=False) #Compute angle between h-bond donor and acceptor
+    [num_t, num_h] = np.shape(da_distances) #save values for number of frames(num_t) and number of bonds(num_b) to caculate
+    for j in range(num_h): #Loop through all h-bonds
+        count = 0 #Initialize count
+        for i in range(num_t): #Loop through all frames
+            if da_distances[i,j] <= 0.25 and da_angles[i,j] >= 2.094: #If distance between donor and acceptor is less than 2.5A and the angle is greater than 120 degrees or ~ 2.094 radians
+                count +=1
+        per.append(100*count/num_t) #Percentage of time each h-bond is present in trajectory
+    
+    #Save hbond percentage to file
+    output = open('Hbond_allo_per' + name_add + '.txt', 'w')
+    for i in range(len(hbond_allo_name)):
+        output.write(str(hbond_allo_name[i]) + ': ' + str(per[i]) + '\n')
+
+    #Delete unneededarrays to save memory
+    del hbond_allo_name; del hbond_allo_atom; del per; del da_distances; del da_angles
+
+    #Write to screen when code section is completed
+    print('Hbond Network Analysis Written')
+
+#Skip Hbond analysis if desired
+else:
+    print('Hbond Network Analysis Skipped')
+
 #Residue pairs needed for either Ligand Interaction of Protein Interaction Analysis
 if check_hel == True or lig_check == True:
     #Set Residue Pairs
-    if lig != 'none':
-        if lig == 'both':
-            group_WPD, group_3, group_4, group_5, group_6, group_bend, group_7, group_L11, pair_other, group_l, group_l2 = mdfunc.set_sect(miss_first, lig, a7_present)
-        else:
-            group_WPD, group_3, group_4, group_5, group_6, group_bend, group_7, group_L11, pair_other, group_l, = mdfunc.set_sect(miss_first, lig, a7_present)
-    else:
-        group_WPD, group_3, group_4, group_5, group_6, group_bend, group_7, group_L11, pair_other = mdfunc.set_sect(miss_first, lig, a7_present)
+    group_WPD, group_3, group_4, group_5, group_6, group_bend, group_7, group_L11 = mdfunc.set_sect(lig, a7_present, offset)
 
 #Compute Interactions between the a3, a6, and a7 helices
 if check_hel == True:
-    #Set pairs to compute distances
-    pair_a3_a6 = list(product(group_3, group_6))
-    pair_a3_WPD = list(product(group_3, group_WPD))
-    pair_a3_bend = list(product(group_3, group_bend))
-    if traj_ns.n_residues > 297: #Only include these pairs if the a7 is present in the trajectory
-        pair_a7_a3 = list(product(group_3, group_7))
-        pair_a7_a6 = list(product(group_6, group_7))
-        pair_a7_L11 = list(product(group_L11, group_7))
-
-    #Set indicies for sections of helices as described from their standard orientation for visualization
-    a3_a7_pt1_ind = [5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23, 29, 30, 31, 32, 33, 34, 35, 42, 43, 44, 45, 46, 47, 48, 54, 55, 56, 57, 58, 59, 60, 67, 68, 69, 70, 71, 72, 73, 79, 80, 81, 82, 
-            83, 84, 85, 91, 92, 93, 94, 95, 96, 97] #Upper region of both helices
-    a3_a7_pt2_ind = [98, 99, 100, 101, 102, 110, 111, 112, 113, 114, 122, 123, 124, 125, 126, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 158, 159, 160, 161, 162, 170, 171, 172, 173, 
-            174] #Lower region of both helices
-    a6_a7_pt1_ind = [5, 6, 7, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 23, 29, 30, 31, 32, 33, 34, 35, 42, 43, 44, 45, 46, 47, 48, 54, 55, 56, 57, 58, 59, 60, 67, 68, 69, 70, 71, 72, 73, 79, 80, 81, 82, 
-            83, 84, 85, 91, 92, 93, 94, 95, 96, 97, 103, 104, 105, 106, 107, 108, 109, 115, 116, 117, 118, 119, 120, 121] #Upper region of both helices
-    a6_a7_pt2_ind = [122, 123, 124, 125, 126, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 158, 159, 160, 161, 162, 170, 171, 172, 173, 174, 182, 183, 184, 185, 186, 194, 195, 196, 197, 198, 206, 
-            207, 208, 209, 210] #Lower region of both Helices
-    a6_a7_pt3_ind = [127, 128, 129, 130, 131, 132, 133, 139, 140, 141, 142, 143, 144, 145, 151, 152, 153, 154, 155, 156, 157, 163, 164, 165, 166, 167, 168, 169, 175, 176, 177, 178, 179, 180, 181, 187, 
-            188, 189, 190, 191, 192, 193, 199, 200, 201, 202, 203, 204, 205, 211, 212, 213, 214, 215, 216, 217] #Upper region of a7 with lower region of the a6 helix
-
-    #Compute distances for all pairs for closest atoms to compute contacts
-    [dist_a3_a6_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a3_a6, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-    [dist_a3_bend_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a3_bend, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-    [dist_a3_WPD_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a3_WPD, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-    if a7_present == True: #Only compute these distances if the a7 helix is present
-        [dist_a7_a3_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_a3, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-        [dist_a7_a6_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_a6, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-        [dist_a7_L11_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_L11, scheme='closest', ignore_nonprotein = False, periodic=True, soft_min = False)
-    #Compute distances for all pairs for alpha carbonds to compute distances between residues
-    [dist_ca_a3_WPD_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a3_WPD, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-    [dist_ca_a3_bend_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a3_bend, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-    [dist_ca_other_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_other, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-    if a7_present == True: #Only compute these distances if the a7 helix is present
-        [dist_ca_a7_a3_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_a3, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-        [dist_ca_a7_a6_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_a6, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-        [dist_ca_a7_L11_all, pairs] = md.compute_contacts(traj_ns, contacts=pair_a7_L11, scheme='ca', ignore_nonprotein = False, periodic=True, soft_min = False)
-
-    #Compute number of time points and number of diatance pairs for following loops
-    time, num_pairs_a3_a6 = np.shape(dist_a3_a6_all)
-    time, num_pairs_a3_bend = np.shape(dist_a3_bend_all)
-    time, num_pairs_a3_WPD = np.shape(dist_a3_WPD_all)
-    time, num_pairs_ca_other = np.shape(dist_ca_other_all)
-    if a7_present == True:
-        time, num_pairs_a7_a3 = np.shape(dist_a7_a3_all)
-        time, num_pairs_a7_a6 = np.shape(dist_a7_a6_all)
-        time, num_pairs_a7_L11 = np.shape(dist_a7_L11_all)
-    
     if rms_chk == False:
-        print('WARNING: RMSD not calculated. Uncorrelated Samples not removed!')
-        t_dist = np.linspace(0, time, num = time)
-        time_uncorr = time
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_dist = []
+            for i in lines:
+                t_dist.append(float(i.strip()))
+        else:
+            print('WARNING: Uncorrelated Samples not removed!')
+            t_dist = np.linspace(0, traj_ns.n_frames, num = traj_ns.n_frames)
     else:
         #Limit to uncorrelated samples
         t_dist = t_full #Determine indices of uncorrelated samples from RMSD of full trajectory
-        time_uncorr = len(t_dist) - 1
+    time_uncorr = len(t_dist)
 
-    #Set open arrays for all samples
-    dist_a3_a6 = np.zeros((time_uncorr, num_pairs_a3_a6))
-    dist_a3_bend = np.zeros((time_uncorr, num_pairs_a3_bend))
-    dist_ca_a3_bend = np.zeros((time_uncorr, num_pairs_a3_bend))
-    dist_a3_WPD = np.zeros((time_uncorr, num_pairs_a3_WPD))
-    dist_ca_a3_WPD = np.zeros((time_uncorr, num_pairs_a3_WPD))
-    dist_ca_other = np.zeros((time_uncorr, num_pairs_ca_other))
-    if a7_present == True:
-        dist_a7_a3 = np.zeros((time_uncorr, num_pairs_a7_a3))
-        dist_ca_a7_a3 = np.zeros((time_uncorr, num_pairs_a7_a3))
-        dist_a7_a6 = np.zeros((time_uncorr, num_pairs_a7_a6))
-        dist_ca_a7_a6 = np.zeros((time_uncorr, num_pairs_a7_a6))
-        dist_a7_L11 = np.zeros((time_uncorr, num_pairs_a7_L11))
-        dist_ca_a7_L11 = np.zeros((time_uncorr, num_pairs_a7_L11))
-    
-    #Set new arrays with uncorrelated samples
-    for i in range(num_pairs_a3_a6):
-        dist = dist_a3_a6_all[:,i]
-        dist_a3_a6[:,i] = uncorr.sort(dist, t_dist)
-    for i in range(num_pairs_a3_bend):
-        dist = dist_a3_bend_all[:,i]
-        dist_a3_bend[:,i] = uncorr.sort(dist, t_dist)
-        dist = dist_ca_a3_bend_all[:,i]
-        dist_ca_a3_bend[:,i] = uncorr.sort(dist, t_dist)
-    for i in range(num_pairs_a3_WPD):
-        dist = dist_a3_WPD_all[:,i]
-        dist_a3_WPD[:,i] = uncorr.sort(dist, t_dist)
-        dist = dist_ca_a3_WPD_all[:,i]
-        dist_ca_a3_WPD[:,i] = uncorr.sort(dist, t_dist)
-    for i in range(num_pairs_ca_other):
-        dist = dist_ca_other_all[:,i]
-        dist_ca_other[:,i] = uncorr.sort(dist, t_dist)
-    if a7_present == True: #Only open these files if the a7 helix is present
-        for i in range(num_pairs_a7_a3):
-            dist = dist_a7_a3_all[:,i]
-            dist_a7_a3[:,i] = uncorr.sort(dist, t_dist)
-            dist = dist_ca_a7_a3_all[:,i]
-            dist_ca_a7_a3[:,i] = uncorr.sort(dist, t_dist)
-        for i in range(num_pairs_a7_a6):
-            dist = dist_a7_a6_all[:,i]
-            dist_a7_a6[:,i] = uncorr.sort(dist, t_dist)
-            dist = dist_ca_a7_a6_all[:,i]
-            dist_ca_a7_a6[:,i] = uncorr.sort(dist, t_dist)
-        for i in range(num_pairs_a7_L11):
-            dist = dist_a7_L11_all[:,i]
-            dist_a7_L11[:,i] = uncorr.sort(dist, t_dist)
-            dist = dist_ca_a7_L11_all[:,i]
-            dist_ca_a7_L11[:,i] = uncorr.sort(dist, t_dist)
-
-    #Open files for the number of interactions with each protein region at each point in time
-    file_200_282 = open('200_282_dist.txt', 'w') #a3 to a6
-    file_179_191 = open('179_191_dist.txt', 'w') #WPD to a3
-    file_185_191 = open('185_191_dist.txt', 'w') #WPD to a3
-    file_151_191 = open('151_191_dist.txt', 'w') #L11 to a3
-    file_264_185 = open('264_185_dist.txt', 'w') #WPD to a6
-    file_178_150 = open('178_150_dist.txt', 'w') #WPD to L11
-    file_81_199 = open('81_199_dist.txt', 'w')
-    file_117_182 = open('117_182_dist.txt', 'w') #WPD to SBL
-    file_117_217 = open('117_217_dist.txt', 'w') #P to SBL
-    file_192_225 = open('192_225_dist.txt', 'w') #a3 top to a5
-    file_182_220 = open('182_220_dist.txt', 'w') #WPD tp P-loop
-    file_187_269 = open('187_269_dist.txt', 'w') #a3 top to a6 top
-    file_178_190 = open('178_190_dist.txt', 'w') #Start of WPD loop to side of a3
-    file_152_177 = open('152_177_dist.txt', 'w') #Start of WPD loop to L11 loop
     file_mean = open('inter_mean.txt', 'w') #File for the mean number of interactions between any two given residues
-    if a7_present == True: #Only open these files if the a7 helix is present
-        file_200_287 = open('200_287_dist.txt', 'w') #a3 to a7 (bottom)
-        file_276_292 = open('276_292_dist.txt', 'w') #a6 to a7 (middle)
-        file_189_295 = open('189_295_dist.txt', 'w') #a3 to a7 (top)
-        file_280_287 = open('280_287_dist.txt', 'w') #a6 to a7 (bottom)
-        file_152_297 = open('152_297_dist.txt', 'w') #L11 to a7
-
-    #Declare arrays to keep track of all contacts
-    a3_a6_all, a3_a7_all, a6_a7_all, a7_L11_all = [],[],[],[] #Arrays for the total contacts made b/w helices
-    a3_a7_pt1, a3_a7_pt2, a6_a7_pt1, a6_a7_pt2, a6_a7_pt3 = [],[],[],[],[] #Arrays for the total contacts made b/w sections of helices
-    if a7_present == True: #Only create these arrays if the a7 helix is present
-        inter_a3_a7 = np.zeros([num_pairs_a7_a3, time_uncorr]) #Array for the running total of interactions over time between each residue pair for tha a3 and a7 helices
-        inter_a6_a7 = np.zeros([num_pairs_a7_a6, time_uncorr]) #Array for the running total of interactions over time between each residue pair for tha a3 and a7 helices
     
-    #Loop through all time points
-    for i in range(time_uncorr):
-        #Set all interaction counters to zero for each new time point
-        check_a3_a6 = 0
-        check_a7_a3 = 0
-        check_a7_a3_pt1 = 0
-        check_a7_a3_pt2 = 0
-        check_a7_a6 = 0
-        check_a7_a6_pt1 = 0
-        check_a7_a6_pt2 = 0
-        check_a7_a6_pt3 = 0
-        check_a7_L11 = 0
-
-        #At each time point save the distance between each residue pair of interest
-        file_179_191.write(str(dist_ca_a3_WPD[i][47]) + '\n')
-        file_185_191.write(str(dist_ca_a3_WPD[i][53]) + '\n')
-        file_200_282.write(str(dist_ca_a3_bend[i][70]) + '\n')
-        file_151_191.write(str(dist_ca_other[i][0]) + '\n')
-        file_264_185.write(str(dist_ca_other[i][1]) + '\n')
-        file_178_150.write(str(dist_ca_other[i][2]) + '\n')
-        file_81_199.write(str(dist_ca_other[i][3]) + '\n')
-        file_117_182.write(str(dist_ca_other[i][4]) + '\n')
-        file_117_217.write(str(dist_ca_other[i][5]) + '\n')
-        file_192_225.write(str(dist_ca_other[i][6]) + '\n')
-        file_182_220.write(str(dist_ca_other[i][7]) + '\n')
-        file_187_269.write(str(dist_ca_other[i][8]) + '\n')
-        file_178_190.write(str(dist_ca_other[i][9]) + '\n')
-        file_152_177.write(str(dist_ca_other[i][10]) + '\n')
-
-        if a7_present == True: #Only save these distances if the a7 helix is present
-            file_200_287.write(str(dist_ca_a7_a3[i][168]) + '\n')
-            file_189_295.write(str(dist_ca_a7_a3[i][44]) + '\n')
-            file_276_292.write(str(dist_ca_a7_a6[i][149]) + '\n')
-            file_280_287.write(str(dist_ca_a7_a6[i][192]) + '\n')
-            file_152_297.write(str(dist_ca_a7_L11[i][34]) + '\n')
-        
-        #Loop through all residue pairs in the a3 and a6 helices
-        for j in range(num_pairs_a3_a6): #Determine # of contacts b/w the a3 and a6 helices
-            if dist_a3_a6[i][j] <= 0.5: #Count the contact if the residue distance is less than 0.5 nm
-                check_a3_a6 += 1
-        a3_a6_all.append(check_a3_a6) #Save the total number of residue contacts b/w the a3 and a6 helices to array
-        if a7_present == True: #Only calculate these interactions if the a7 helix is present
-            for k in range(num_pairs_a7_a3): #Determine # of contacts b/w the a3 and a7 helices
-                if dist_a7_a3[i][k] <= 0.5:
-                    check_a7_a3 += 1
-                    inter_a3_a7[k][i] = 1 #Record presence of contact for given residue pair(k) and time(i)
-                    if k in a3_a7_pt1_ind: #If this residue pair index is in part 1 of the a3 and a7 helices
-                        check_a7_a3_pt1 += 1
-                    if k in a3_a7_pt2_ind: #If this residue pair index is in part 2 of the a3 and a7 helices
-                        check_a7_a3_pt2 += 1
-            #Save to array/file for each time point
-            a3_a7_all.append(check_a7_a3)
-            a3_a7_pt1.append(check_a7_a3_pt1)
-            a3_a7_pt2.append(check_a7_a3_pt2)
-            for l in range(num_pairs_a7_a6): #Determine # of contacts b/w the a6 and a7 helices
-                if dist_a7_a6[i][l] <= 0.5:
-                    check_a7_a6 += 1
-                    inter_a6_a7[l][i] = 1 #Record presence of contact for given residue pair(l) and time(i)
-                    if l in a6_a7_pt1_ind: #If this residue pair index is in part 1 of the a6 and a7 helices
-                        check_a7_a6_pt1 += 1
-                    if l in a6_a7_pt2_ind: #If this residue pair index is in part 2 of the a6 and a7 helices
-                        check_a7_a6_pt2 += 1
-                    if l in a6_a7_pt3_ind: #If this residue pair index is in part 3 of the a6 and a7 helices
-                        check_a7_a6_pt3 += 1
-            #Save to array/file for each time point
-            a6_a7_all.append(check_a7_a6)
-            a6_a7_pt1.append(check_a7_a6_pt1)
-            a6_a7_pt2.append(check_a7_a6_pt2)
-            a6_a7_pt3.append(check_a7_a6_pt3)
-            for m in range(num_pairs_a7_L11): #Determine # of contacts b/w the L11 loop and a7 helix
-                if dist_a7_L11[i][m] <= 0.5:
-                    check_a7_L11 += 1
-            a7_L11_all.append(check_a7_L11)
-    
-    np.savetxt('a3_a6_inter.txt', np.asarray(a3_a6_all))
-    if a7_present == True:
-        #Save interactions for 2 part helix interactions
-        np.savetxt('a3_a7_pt1_tot_inter.txt', np.asarray(a3_a7_pt1))
-        np.savetxt('a6_a7_pt1_tot_inter.txt', np.asarray(a6_a7_pt1))
-        np.savetxt('a3_a7_pt2_tot_inter.txt', np.asarray(a3_a7_pt2))
-        np.savetxt('a6_a7_pt2_tot_inter.txt', np.asarray(a6_a7_pt2))
-        np.savetxt('a6_a7_pt3_tot_inter.txt', np.asarray(a6_a7_pt3))
-        np.savetxt('a7_a3_inter.txt', np.asarray(a3_a7_all))
-        np.savetxt('a7_a6_inter.txt', np.asarray(a6_a7_all))
-        np.savetxt('a7_L11_inter.txt', np.asarray(a7_L11_all))
-
-        #Save all individual interactions to file
-        file_a3_a7_inters = open('a3_a7_inter_all.txt', 'w')
-        for i in range(num_pairs_a7_a3):
-            file_a3_a7_inters.write(str(100*sum(inter_a3_a7[i,:])/time_uncorr) + '\n')
-        file_a6_a7_inters = open('a6_a7_inter_all.txt', 'w')
-        for j in range(num_pairs_a7_a6):
-            file_a6_a7_inters.write(str(100*sum(inter_a6_a7[j,:])/time_uncorr) + '\n')
-        #Save mean # of interactions over all time points
-        file_mean.write('a6-a7 inters mean: ' + str(sum(a6_a7_all)/time_uncorr) + '\n')
-        file_mean.write('a3-a7 inters mean: ' + str(sum(a3_a7_all)/time_uncorr))
-    file_mean.write('a3-a6 inters mean: ' + str(sum(a3_a6_all)/time_uncorr) + '\n')
-    
-    #Close all files
-    file_200_282.close()
-    file_179_191.close()
-    file_185_191.close()
-    file_151_191.close()
-    file_264_185.close()
-    file_178_150.close()
-    file_mean.close()
-    if a7_present == True: #Only close files that were opened
-        file_200_287.close()
-        file_276_292.close()
-        file_189_295.close()
-        file_280_287.close()
-        file_152_297.close()
-    
-    #Delete unneeded arrays
-    del pair_a3_a6; del pair_a3_WPD; del pair_a3_bend; del dist_a3_a6_all; del dist_a3_bend_all; del dist_ca_a3_WPD_all; del dist_ca_a3_bend_all; del dist_ca_other_all
-    del dist_a3_a6; del dist_a3_bend; del dist_ca_a3_WPD; del dist_ca_a3_bend; del dist_ca_other; del dist; del a3_a6_all
-    if a7_present == True:
-        del a3_a7_pt1_ind; del a3_a7_pt2_ind; del a6_a7_pt1_ind; del a6_a7_pt2_ind; del a6_a7_pt3_ind; del pair_a7_a3; del pair_a7_a6; del pair_a7_L11
-        del dist_a7_a3_all; del dist_a7_a6_all; del dist_a7_L11_all; del dist_ca_a7_a3_all; del dist_ca_a7_a6_all; del dist_ca_a7_L11_all
-        del dist_a7_a3; del dist_a7_a6; del dist_a7_L11; del dist_ca_a7_a3; del dist_ca_a7_a6; del dist_ca_a7_L11
-        del a3_a7_all; del a6_a7_all; del a7_L11_all; del a3_a7_pt1; del a3_a7_pt2; del a6_a7_pt1; del a6_a7_pt2; del a6_a7_pt3; del inter_a3_a7; del inter_a6_a7
-
+    #Compute Distances
+    mdfunc.hel_inter(traj_ns, group_3, group_6, t_dist, time_uncorr, file_mean, 'a3', 'a6', directory)
+    mdfunc.hel_inter(traj_ns, group_3, group_WPD, t_dist, time_uncorr, file_mean, 'a3', 'WPD', directory)
+    mdfunc.hel_inter(traj_ns, group_3, group_bend, t_dist, time_uncorr, file_mean, 'a3', 'bend', directory)
+    if traj_ns.n_residues > 297: #Only include these pairs if the a7 is present in the trajectory
+        mdfunc.hel_inter(traj_ns, group_3, group_7, t_dist, time_uncorr, file_mean, 'a7', 'a3', directory)
+        mdfunc.hel_inter(traj_ns, group_6, group_7, t_dist, time_uncorr, file_mean, 'a7', 'a6', directory)
+        mdfunc.hel_inter(traj_ns, group_L11, group_7, t_dist, time_uncorr, file_mean, 'a7', 'L11', directory)
+   
     print('Helix Interaction Analysis Completed')
 else:
     print('Helix Interaction Analysis Skipped')
 
+if check_hel_indv == True:
+    #Compute percent individual interactions are formed
+    #Determine interaction pairs to evaluate
+    if input_inter == False:
+        if a7_present == True: #Only include these pairs if the a7 is present in the trajectory
+            hel_inter = np.array([[200, 282], [179, 191], [185, 191], [151, 191], [264, 185], [178, 150], [81, 199], [117, 182], [117, 217], [192, 225], [182, 220], [187, 269], [178, 190], [152, 177], [200, 287], [276, 292], [189, 295], [280, 287], [152, 297]])
+        else:
+            hel_inter = np.array([[200, 282], [179, 191], [185, 191], [151, 191], [264, 185], [178, 150], [81, 199], [117, 182], [117, 217], [192, 225], [182, 220], [187, 269], [178, 190], [152, 177], [200, 287], [280, 287]])
+
+    else:
+        #Read input file if provided
+        hel_str = open(input_inter, 'r').readlines()
+        hel_inter = np.zeros((len(hel_str), 2))
+        for i in range(len(hel_str)):
+            res1, res2 = hel_str[i].split()
+            hel_inter[i][:] = [int(res1), int(res2)]
+ 
+    if rms_chk == False:
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_full = []
+            for i in lines:
+                t_full.append(float(i.strip()))
+        else:
+            print('WARNING: Uncorrelated Samples not removed!')
+            t_full = np.linspace(0, traj_ns.n_frames, num = traj_ns.n_frames)
+   
+    #Send to function to compute distances and save to file
+    mdfunc.pair_dist(traj_ns, hel_inter, t_full, offset, directory)
+
+    print('Individual Helix Interaction Analysis Completed')
+else:
+    print('Individual Helix Interaction Analysis Skipped')
+
 #Ligand RMSD analysis
 if lig_rmsd_check == True:
     #Calculate distance between Ligand and res 193
-    if miss_first == True:
-        res = 191
-        res2 = 275
-    else:
-        res = 192
-        res2 = 274
+    res = 194 - offset
+    res2 = 276 - offset
+
     if lig == 'both':
         res_pair = np.zeros((4,2))
     else:
@@ -573,12 +522,24 @@ if lig_rmsd_check == True:
     lig_dist = md.compute_distances(traj_ns, res_pair, periodic = True)
     
     if rms_chk == False:
-        print('WARNING: RMSD not calculated. Uncorrelated samples not removed!')
-        dist_lig_193 = lig_dist[:,0]
-        dist_lig_283 = lig_dist[:,1]
-        if lig == 'both':
-            dist_lig2_193 = lig_dist[:,2]
-            dist_lig2_283 = lig_dist[:,3]
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_full = []
+            for i in lines:
+                t_full.append(float(i.strip()))
+            #Remove uncorrelated samples
+            dist_lig_193 = uncorr.sort(lig_dist[:,0], t_full)
+            dist_lig_283 = uncorr.sort(lig_dist[:,1], t_full)
+            if lig == 'both':
+                dist_lig2_193 = uncorr.sort(lig_dist[:,2], t_full)
+                dist_lig2_283 = uncorr.sort(lig_dist[:,3], t_full)
+        else:
+            print('WARNING: Uncorrelated samples not removed!')
+            dist_lig_193 = lig_dist[:,0]
+            dist_lig_283 = lig_dist[:,1]
+            if lig == 'both':
+                dist_lig2_193 = lig_dist[:,2]
+                dist_lig2_283 = lig_dist[:,3]
     else:
         #Remove uncorrelated samples
         dist_lig_193 = uncorr.sort(lig_dist[:,0], t_full)
@@ -588,10 +549,10 @@ if lig_rmsd_check == True:
             dist_lig2_283 = uncorr.sort(lig_dist[:,3], t_full)
 
     #Save to text file
-    np.savetxt('dist_lig_193.txt', dist_lig_193)
+    np.savetxt('dist_lig_194.txt', dist_lig_193)
     np.savetxt('dist_lig_276.txt', dist_lig_283)
     if lig == 'both':
-        np.savetxt('dist_lig2_193.txt', dist_lig2_193)
+        np.savetxt('dist_lig2_194.txt', dist_lig2_193)
         np.savetxt('dist_lig2_276.txt', dist_lig2_283)
 
     if lig == 'AD' or lig == 'BBR':
@@ -600,7 +561,7 @@ if lig_rmsd_check == True:
         lig_ref_top = lig_ref.topology
         traj_cmplx = traj_ns.atom_slice(traj_ns.topology.select('protein or resname AD or resname BBR'))
 
-        res_align = lig_traj_top.select('resid 185 to 199 or resid 264 to 280')
+        res_align = lig_traj_top.select('resid ' + str(188 - offset) + ' to ' + str(202 - offset) + ' or resid ' + str(262 - offset) + ' to ' + str(277 - offset))
         
         #traj_ns_align = traj_ns.superpose(traj_a7, lig_ref, atom_indices = res_align, ref_atom_indices = res_align)
         traj_ns_align = traj_cmplx.superpose(lig_ref_ns, atom_indices = res_align)
@@ -622,7 +583,14 @@ if lig_rmsd_check == True:
         for i in range(time):
             displacment[i] = (com[i][0] - com_ref[0][0])**2 + (com[i][1] - com_ref[0][1])**2 + (com[i][2] - com_ref[0][2])**2
         if rms_chk == False:
-            print('WARNING: RMSD not calculated. Uncorrelated samples not removed!')
+            if os.path.exists('uncorrelated_frames.txt'):
+                lines = open('uncorrelated_frames.txt', 'r').readlines()
+                t_full = []
+                for i in lines:
+                    t_full.append(float(i.strip()))
+                displacment = uncorr.sort(displacment, t_full)
+            else:
+                print('WARNING: Uncorrelated samples not removed!')
         else:
             displacment = uncorr.sort(displacment, t_full)
         rmsd = np.array([math.sqrt(np.mean(displacment))])
@@ -635,6 +603,13 @@ if lig_rmsd_check == True:
 
 #Ligand Interaction analysis
 if lig_check == True:
+    #Define ligand group
+    if lig == 'both':
+        group_l = traj_prot.n_residues + 1
+        group_l2 = traj_prot.n_residues + 2
+    else:
+         group_l = traj_prot.n_residues + 1
+       
     #Compute Ligand location
     pair_a3 = list(product(group_l, group_3))
     pair_a4 = list(product(group_l, group_4))
@@ -696,67 +671,37 @@ if lig_check == True:
         time, num_pairs_a7 = np.shape(dist_a7_all)
 
     if rms_chk == False:
-        print('WARNING: RMSD not calculated. Uncorrelated Samples not removed!')
-        t_dist = np.linspace(0, time, num = time)
-        time_uncorr = time
+        if os.path.exists('uncorrelated_frames.txt'):
+            lines = open('uncorrelated_frames.txt', 'r').readlines()
+            t_dist = []
+            for i in lines:
+                t_dist.append(float(i.strip()))
+        else:
+            print('WARNING: Uncorrelated Samples not removed!')
+            t_dist = np.linspace(0, time, num = time)
     else:
         #Limit to uncorrelated samples
         t_dist = t_full #Determine indices of uncorrelated samples from RMSD of full trajectory
-        time_uncorr = len(t_dist)
-
-    #Set open arrays for all samples
-    dist_a3 = np.zeros((time_uncorr, num_pairs_a3))
-    dist_bend = np.zeros((time_uncorr, num_pairs_bend))
-    dist_a4 = np.zeros((time_uncorr, num_pairs_a4))
-    dist_a5 = np.zeros((time_uncorr, num_pairs_a5))
-    dist_a6 = np.zeros((time_uncorr, num_pairs_a6))
-    if a7_present == True:
-        dist_a7 = np.zeros((time_uncorr, num_pairs_a7))
-    if lig == 'both':
-        dist2_a3 = np.zeros((time_uncorr, num_pairs_a3))
-        dist2_bend = np.zeros((time_uncorr, num_pairs_bend))
-        dist2_a4 = np.zeros((time_uncorr, num_pairs_a4))
-        dist2_a5 = np.zeros((time_uncorr, num_pairs_a5))
-        dist2_a6 = np.zeros((time_uncorr, num_pairs_a6))
-        if a7_present == True:
-            dist2_a7 = np.zeros((time_uncorr, num_pairs_a7))
+    time_uncorr = len(t_dist)
 
     #Set new arrays with uncorrelated samples
-    for i in range(num_pairs_a3):
-        dist = dist_a3_all[:,i]
-        dist_a3[:,i] = uncorr.sort(dist, t_dist)
-        if lig == 'both':
-            dist2 = dist2_a3_all[:,i]
-            dist2_a3[:,i] = uncorr.sort(dist2, t_dist)
+    if lig == 'both':
+        dist_a3 = lig_dist_uncorr(num_pairs_a3, dist_a3_all, lig, dist2_a3_all, t_dist)
+        dist_a4 = lig_dist_uncorr(num_pairs_a4, dist_a4_all, lig, dist2_a4_all, t_dist)
+        dist_a5 = lig_dist_uncorr(num_pairs_a5, dist_a5_all, lig, dist2_a5_all, t_dist)
+        dist_a6 = lig_dist_uncorr(num_pairs_a6, dist_a6_all, lig, dist2_a6_all, t_dist)
+        dist_bend = lig_dist_uncorr(num_pairs_bend, dist_bend_all, lig, dist2_bend_all, t_dist)
+        if a7_present == True:
+            dist_a7 = lig_dist_uncorr(num_pairs_a7, dist_a7_all, lig, dist2_a7_all, t_dist)
 
-    for i in range(num_pairs_a4):
-        dist = dist_a4_all[:,i]
-        dist_a4[:,i] = uncorr.sort(dist, t_dist)
-        if lig == 'both':
-            dist2 = dist2_a4_all[:,i]
-            dist2_a4[:,i] = uncorr.sort(dist2, t_dist)
-
-    for i in range(num_pairs_a5):
-        dist = dist_a5_all[:,i]
-        dist_a5[:,i] = uncorr.sort(dist, t_dist)
-        if lig == 'both':
-            dist2 = dist2_a5_all[:,i]
-            dist2_a5[:,i] = uncorr.sort(dist2, t_dist)
-
-    for i in range(num_pairs_a6):
-        dist = dist_a6_all[:,i]
-        dist_a6[:,i] = uncorr.sort(dist, t_dist)
-        if lig == 'both':
-            dist2 = dist2_a6_all[:,i]
-            dist2_a6[:,i] = uncorr.sort(dist2, t_dist)
-
-    if traj_ns.n_residues > 297:
-        for i in range(num_pairs_a7):
-            dist = dist_a7_all[:,i]
-            dist_a7[:,i] = uncorr.sort(dist, t_dist)
-            if lig == 'both':
-                dist2 = dist2_a7_all[:,i]
-                dist2_a7[:,i] = uncorr.sort(dist2, t_dist)
+    else:
+        dist_a3, dist2_a3 = lig_dist_uncorr(num_pairs_a3, dist_a3_all, lig, 0, t_dist)
+        dist_a4, dist2_a4 = lig_dist_uncorr(num_pairs_a4, dist_a4_all, lig, 0, t_dist)
+        dist_a5, dist2_a5 = lig_dist_uncorr(num_pairs_a5, dist_a5_all, lig, 0, t_dist)
+        dist_a6, dist2_a6 = lig_dist_uncorr(num_pairs_a6, dist_a6_all, lig, 0, t_dist)
+        dist_bend, dist2_bend = lig_dist_uncorr(num_pairs_bend, dist_bend_all, lig, 0, t_dist)
+        if a7_present == True:
+            dist_a7, dist2_a7 = lig_dist_uncorr(num_pairs_a7, dist_a7_all, lig, 0, t_dist)
 
     #Set array for the crystal structure binding location and two alternatives
     if lig == 'AD' or lig == 'both':
@@ -786,65 +731,23 @@ if lig_check == True:
 
     #Loop through all frames
     for i in range(time_uncorr):
-        #At each time point reset counters for helix interactions
-        check_a3 = 0
-        check_a3_top = 0
-        check_a4 = 0
-        check_a5 = 0
-        check_a6 = 0
-        check_a6_mid = 0
-        check_bend = 0
-        check_a7 = 0
-        check_a7_top = 0
-        if lig == 'both':
-            check2_a3 = 0
-            check2_a4 = 0
-            check2_a5 = 0
-            check2_a6 = 0
-            check2_bend = 0
-            check2_a7 = 0
-
         #Index for residues interactions in a3, a6, and a7 + the bend with ligand
         bond = 0
-        for j in range(num_pairs_a3): #Determine # of contacts with a3 helix
-            if dist_a3[i][j] <= 0.5:
-                check_a3 += 1
-                if j < 7:
-                    check_a3_top += 1
-                lig_tot_cont[bond] += 1
-            if lig == 'both' and dist2_a3[i][j] <= 0.5:
-                check2_a3 += 1
-                lig2_tot_cont[bond] += 1
-            bond += 1
-        for k in range(num_pairs_a4): #Determine # of contacts with a4 helix
-            if dist_a4[i][k] <= 0.5:
-                check_a4 += 1
-            if lig == 'both' and dist2_a4[i][k] <= 0.5:
-                check2_a4 += 1
-        for l in range(num_pairs_a5):  #Determine # of contacts with a5 helix
-            if dist_a5[i][l] <= 0.5:
-                check_a5 += 1
-            if lig == 'both' and dist2_a5[i][l] <= 0.5:
-                check2_a5 += 1
-        for m in range(num_pairs_a6):  #Determine # of contacts with a6 helix
-            if dist_a6[i][m] <= 0.5:
-                check_a6 += 1
-                if m < 8:
-                    check_a6_mid += 1
-                lig_tot_cont[bond] += 1
-            if lig == 'both' and dist2_a6[i][m] <= 0.5:
-                check2_a6 += 1
-                lig2_tot_cont[bond] += 1
-            bond += 1
-        for o in range(num_pairs_bend): #Determine the # of contacts between a6 and a7 helices
-            if dist_bend[i][o] <= 0.5:
-                check_bend += 1
-                lig_tot_cont[bond] += 1
-            if lig == 'both' and dist2_bend[i][o] <= 0.5:
-                check2_bend += 1
-                lig2_tot_cont[bond] += 1
-            bond += 1
-    
+        if lig == 'both':
+            check_a3, check2_a3, check_a3_top, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_a3, dist_a3, dist2_a3, 7, lig_tot_cont, lig, lig2_tot_cont, bond)
+            check_a4, check2_a4, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_a4, dist_a4, dist2_a4, 0, lig_tot_cont, lig, lig2_tot_cont, bond)
+            check_a5, check2_a5, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_a5, dist_a5, dist2_a5, 0, lig_tot_cont, lig, lig2_tot_cont, bond)
+            check_a6, check2_a6, check_a6_mid, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_a6, dist_a6, dist2_a6, 8, lig_tot_cont, lig, lig2_tot_cont, bond)
+            check_bend, check2_bend, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_bend, dist_bend, dist2_bend, 0, lig_tot_cont, lig, lig2_tot_cont, bond)
+
+        else:
+            check_a3, check_a3_top, lig_tot_cont, bond = lig_hel_inter(num_pairs_a3, dist_a3, 0, 7, lig_tot_cont, lig, 0, bond)
+            check_a4, lig_tot_cont, bond = lig_hel_inter(num_pairs_a4, dist_a4, 0, 0, lig_tot_cont, lig, 0, bond)
+            check_a5, lig_tot_cont, bond = lig_hel_inter(num_pairs_a5, dist_a5, 0, 0, lig_tot_cont, lig, 0, bond)
+            check_a6, check_a6_mid, lig_tot_cont, bond = lig_hel_inter(num_pairs_a6, dist_a6, 0, 8, lig_tot_cont, lig, 0, bond)
+            check_bend, lig_tot_cont, bond = lig_hel_inter(num_pairs_bend, dist_bend, 0, 0, lig_tot_cont, lig, 0, bond)
+
+
         #Output number of interactions to files for a3-a6 at each time point
         file_a3.write(str(check_a3) + '\n')
         file_a4.write(str(check_a4) + '\n')
@@ -856,20 +759,20 @@ if lig_check == True:
             file2_a5.write(str(check2_a5) + '\n')
             file2_a6.write(str(check2_a6) + '\n')
         
-        if traj_prot.n_residues > 297:
-            for n in range(num_pairs_a7):#Determine # of contacts with the a7 helix pt1
-                if dist_a7[i][n] <= 0.5:
-                    check_a7 += 1
-                    if n > 8:
-                        check_a7_top += 1
-                    lig_tot_cont[bond] += 1
-                bond += 1
+        if a7_present == True:
+            if lig == 'both':
+                check_a7, check2_a7, check_a7_top, lig_tot_cont, lig2_tot_cont, bond = lig_hel_inter(num_pairs_a7, dist_a7, dist2_a7, 8, lig_tot_cont, lig, lig2_tot_cont, bond)
+            else:
+                check_a7, check_a7_top, lig_tot_cont, bond = lig_hel_inter(num_pairs_a7, dist_a7, 0, 8, lig_tot_cont, lig, 0, bond)
+
             #Output number of interactions to file for a7
             file_a7.write(str(check_a7) + '\n')
+            if lig == 'both':
+                file2_a7.write(str(check2_a7) + '\n')
 
         if lig == 'AD' or lig == 'both': 
-            if traj_prot.n_residues > 297:
-               #Determine ligand binding Location
+            if a7_present == True:
+                #Determine ligand binding Location
                 #Sum total interactions for each binding location
                 total_contact_loc1 = check_a3 + check_a7 #Crystal structure binding location
                 total_contact_loc2 = check_a6 + check_bend + check_a7 #Alt loc 1
@@ -1114,7 +1017,7 @@ if pca_ck == True:
 
     #Plot PCA
     fig = plt.figure()
-    plt.scatter(reduced_cartesian[:, 0], reduced_cartesian[:,1], marker='x', c=traj.time)
+    plt.scatter(reduced_cartesian[:, 0], reduced_cartesian[:,1], marker='x', c=traj_ns.time)
     plt.xlabel('PC1')
     plt.ylabel('PC2')
     plt.title('Cartesian coordinate PCA for '+File_base)
