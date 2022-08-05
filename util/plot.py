@@ -6,8 +6,12 @@
 #Output: x, y = vectors for each of the two columns in the input file
 def col2_load_data(file_dir, file_name, convert):
     x,y = [],[]
+    #Add file extension
+    if file_name.split('.')[-1] != 'xvg': #Add file extension if not in input
+        file_name = file_name + '.xvg'
+
     #Load data
-    with open(file_dir + '/' + file_name + '.xvg') as f:
+    with open(file_dir + '/' + file_name) as f:
         for _ in range(18):
             next(f)
         for line in f:
