@@ -98,7 +98,7 @@ lig = args.l
 lig_ref_pdb = args.lref
 directory = args.d
 traj_time = args.n
-offset = args.m + 1
+offset = args.m + 1 #Residue offset includes the number of missing residues plus 1 to account for the numbering starting at 0 rather than 1
 if lig != 'none':
     lig_check = True
 else:
@@ -111,10 +111,10 @@ import uncorr
 import plot
 
 #Load trajectories
-traj_bb, traj_prot, traj_ns, traj_a7, miss_first = mdfunc.mdtraj_load(File_traj, File_gro, [284, 294]) 
+traj_bb, traj_prot, traj_ns, traj_a7 = mdfunc.mdtraj_load(File_traj, File_gro, [284, 294], offset) 
 
 #Determine if the full a7 helix is present (residues 287 to 295)
-if traj_prot.n_residues > 294:
+if traj_prot.n_residues > 290:
     a7_present = True
 else:
     a7_present = False
@@ -279,7 +279,7 @@ if dssp_check == True:
 
     #limit to uncorrelated data
     frame_max,residue = dssp_list.shape #determine the number of frames and residues for which dssp analysis was completed
-    dssp_uncorr = np.full((len(t_full) - 1, residue), none) #declare an empty vector to input uncorrelated dssp values for each residue
+    dssp_uncorr = np.full((len(t_full) - 1, residue), None) #declare an empty vector to input uncorrelated dssp values for each residue
     for i in range(residue): #loop through each residue seperately
         dssp_res = dssp_list[:,i] #seperate all time values for a single residue
         dssp_res_mod = [] 
